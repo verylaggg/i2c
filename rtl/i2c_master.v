@@ -10,9 +10,9 @@
 *
 * Author : VeryLag (verylag0401@gmail.com)
 * 
-* Creat : 2025/04/02
+* Creat : 2025/04/03
 * 
-* Description : testbench
+* Description : I2C Master
 * 
 ******************************************************************************/
 /*
