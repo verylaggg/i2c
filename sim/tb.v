@@ -24,6 +24,7 @@ module tb();
     wire scl, sda;
     //pullup (scl);
     pullup (sda);
+    reg sda_slv;
 
     clk_rst_model # (
         .period     (100        )
@@ -46,12 +47,26 @@ module tb();
     always @ (posedge scl or negedge rstn) begin
         if (!rstn)
             mst_dfifo <= 'h5b; // wr instr
-        else if (i2c_master_x.mst_fsm == 5)
+        else if (i2c_master_x.bit_cnt == 'h7 && (i2c_master_x.mst_fsm == 3 || i2c_master_x.mst_fsm == 4 ))
             mst_dfifo <= mst_dfifo + 2; // randam addr + wr instr
         else
             mst_dfifo <= mst_dfifo;
     end
 
+    always @ (*) begin
+        sda_slv = 'hz;
+        
+        wait (i2c_master_x.mst_fsm == 5);
+        @ (posedge i2c_master_x.sda_chg);
+        sda_slv = 'h0;
+        @ (posedge i2c_master_x.sda_chg);
+        force sda_slv = 'hz;
+        @ (negedge i2c_master_x.sda_chg);
+        release sda_slv;
+    end
+
+    assign sda = sda_slv;
+    
     initial begin
         @ (posedge rstn) $display ("rstn end");
         testport = 1;
