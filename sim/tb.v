@@ -21,7 +21,7 @@ module tb();
     reg testport = 0;
     wire rstn, clk, clk_20m , clk_50m , clk_100m;
     wire scl, sda;
-    pullup (scl);
+    //pullup (scl);
     pullup (sda);
 
     clk_rst_model # (
