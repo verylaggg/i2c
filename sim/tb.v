@@ -46,7 +46,7 @@ module tb();
 
     always @ (posedge scl or negedge rstn) begin
         if (!rstn)
-            mst_dfifo <= 'h5b; // wr instr
+            mst_dfifo <= 'h5a; // wr instr
         else if (i2c_master_x.bit_cnt == 'h7 && (i2c_master_x.mst_fsm == 3 || i2c_master_x.mst_fsm == 4 ))
             mst_dfifo <= mst_dfifo + 2; // randam addr + wr instr
         else
@@ -72,7 +72,7 @@ module tb();
         testport = 1;
         $display("sim start");
 
-        #(150*100);
+        #(150*50);
         testport = 2;
         $display("sim end");
         $finish;
