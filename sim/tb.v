@@ -72,7 +72,7 @@ module tb();
         testport = 1;
         $display("sim start");
 
-        #(150*1000*8);
+        #(150*100);
         testport = 2;
         $display("sim end");
         $finish;
