@@ -28,7 +28,7 @@ SDA     |_________|     |_____|           |_____|     |________|
 coding priority and note:
     1 master write
         * Desc. ACK/NACK only consider to receive sda
-        * TODO: STOP state control
+        * TODO: wr data count
         * TODO: reaction to ACK/NACK (replay...)
     2 master read
         * TODO: ACK/NACK response
@@ -40,6 +40,8 @@ module i2c_master(
     input   clk,
     input   rstn,
     input   [7:0] mst_dfifo,
+    input   [7:0] mst_ctrl,
+    output  [7:0] mst_status,
     output  scl,
     inout   sda
 );
@@ -56,17 +58,30 @@ module i2c_master(
     reg             sda_en_d1, scl_d1, scl_en, sda_en;
     reg [8*10-1:0]  mst_fsm_ascii, last_mst_fsm_ascii;
     reg     [7:0]   data_buf;
+    reg             rcv_ack;
     wire            sda_chg, str_stb, end_trans;
     wire            scl_rp, scl_fp, scl_bp;
     wire            clk_div16, clk_div8, clk_div4, clk_div2;
 
+    // control signals
+    wire            pld_rdy = mst_ctrl[7];
+    wire    [3:0]   pld_cnt = mst_ctrl[3:0]; // max payload=16Bytes
+
+    // status signals
+    wire    [7:0]   mst_status;
+    assign mst_status[7] = busy;
+
     // to simulate enable i2c master whenever data is ready
-    initial begin
-        sda_en = 'h0;
-        #278;
-        sda_en = 'h1;
-        wait ((mst_fsm == STOP) && sda && scl);
-        sda_en = 'h0;
+
+    always @ (posedge clk or negedge rstn) begin
+        if (!rstn)
+            sda_en = 'h0;
+        else if (mst_fsm == IDLE && pld_rdy)
+            sda_en = 'h1;
+        else if ((mst_fsm == STOP) && sda && scl)
+            sda_en = 'h0;
+        else
+            sda_en = sda_en;
     end
 
     always @ (*) begin
@@ -101,7 +116,7 @@ module i2c_master(
         end
         // 'h1
         START: begin
-            if (sda_chg)
+            if (scl_fp)
                 mst_fsm_n = ADDR_RW;
         end
         // 'h2
@@ -122,9 +137,12 @@ module i2c_master(
         end
         // 'h5
         ACK_NACK: begin
-            if (sda_chg && bit_cnt==0)
-                mst_fsm_n = DATA;
-            else if (scl_fp && last_mst_fsm == DATA)
+            if (scl_fp && last_mst_fsm == ADDR_RW) begin
+                if (!rcv_ack)
+                    mst_fsm_n = STOP;
+                else
+                    mst_fsm_n = DATA;
+            end else if (scl_fp && last_mst_fsm == DATA)
                 mst_fsm_n = STOP;
         end
         // 'h6
@@ -177,19 +195,29 @@ module i2c_master(
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
             data_buf <= 'h0;
-        else if (sda_chg) begin
-            if (mst_fsm == START || mst_fsm == ACK_NACK)
-                data_buf <= mst_dfifo;
-            else if (mst_fsm == DATA || mst_fsm == ADDR_RW)
-                data_buf <= {data_buf[6:0], 1'h0};
-        end else
+        else if (scl_fp && (mst_fsm == START || mst_fsm == ACK_NACK))
+            data_buf <= mst_dfifo;
+        else if (sda_chg && (bit_cnt > 0) && (mst_fsm == DATA || mst_fsm == ADDR_RW))
+            data_buf <= {data_buf[6:0], 1'h0};
+        else
             data_buf <= data_buf;
     end
 
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
+            rcv_ack <= 'h0;
+        else if (mst_fsm == ACK_NACK) begin
+            if (!sda && scl)
+                rcv_ack <= 'h1;
+            else if (sda_chg)
+                rcv_ack <= 'h0;
+        end else
+            rcv_ack <= rcv_ack;
+    end
+    always @ (posedge clk or negedge rstn) begin
+        if (!rstn)
             bit_cnt <= 'h0;
-        else if (scl_fp && (mst_fsm == DATA || mst_fsm == ADDR_RW)) 
+        else if (scl_fp && (mst_fsm == DATA || mst_fsm == ADDR_RW))
             bit_cnt <= bit_cnt + 'h1;
         else if (scl_fp && mst_fsm == ACK_NACK)
             bit_cnt <= 'h0;
@@ -222,5 +250,6 @@ module i2c_master(
          (mst_fsm == DATA)    ? data_buf[7] :
          (mst_fsm == STOP && (sda_cnt != 0))    ? 'h0 : 'hz;
     assign {clk_div16, clk_div8, clk_div4, clk_div2} = clk_div_cnt;
+    assign busy = mst_fsm != IDLE;
 
 endmodule

@@ -21,6 +21,8 @@ module tb();
     reg testport = 0;
     reg [7:0] mst_dfifo;
     wire rstn, clk, clk_20m , clk_50m , clk_100m;
+    wire  [7:0] mst_status;
+    reg  [7:0] mst_ctrl;
     wire scl, sda;
     //pullup (scl);
     pullup (sda);
@@ -40,10 +42,13 @@ module tb();
         .clk        (clk_100m   ),
         .rstn       (rstn       ),
         .mst_dfifo  (mst_dfifo  ),
+        .mst_ctrl   (mst_ctrl   ),
+        .mst_status (mst_status ),
         .scl        (scl        ),
         .sda        (sda        )
     );
 
+    // payload
     always @ (posedge scl or negedge rstn) begin
         if (!rstn)
             mst_dfifo <= 'h5a; // wr instr
@@ -53,12 +58,23 @@ module tb();
             mst_dfifo <= mst_dfifo;
     end
 
+    // payload ready control
+    initial begin
+        mst_ctrl = 'h00;
+        #210;
+        mst_ctrl = 'h80;
+        repeat (4) @ (posedge mst_status[7]);
+        mst_ctrl = 'h00;
+
+    end
+
+    // ack response
     always @ (*) begin
         sda_slv = 'hz;
-        
+
         wait (i2c_master_x.mst_fsm == 5);
         @ (posedge i2c_master_x.sda_chg);
-        sda_slv = 'h0;
+        sda_slv = 'h0; // ack = 0 = !nack
         @ (posedge i2c_master_x.sda_chg);
         force sda_slv = 'hz;
         @ (negedge i2c_master_x.sda_chg);
@@ -66,13 +82,16 @@ module tb();
     end
 
     assign sda = sda_slv;
-    
+
     initial begin
         @ (posedge rstn) $display ("rstn end");
         testport = 1;
         $display("sim start");
 
-        #(150*50);
+        // wait ~busy
+        @ (posedge mst_status[7]);
+        @ (negedge mst_status[7]);
+        #(150);
         testport = 2;
         $display("sim end");
         $finish;
