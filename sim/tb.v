@@ -49,7 +49,12 @@ module tb();
         .scl        (scl        ),
         .sda        (sda        )
     );
-
+    i2c_slave i2c_slave_x (
+        .clk        (clk_100m   ),
+        .rstn       (rstn       ),
+        .scl        (scl        ),
+        .sda        (sda        )
+    );
     always @ (posedge clk_100m) begin
         if (i2c_master_x.mst_fsm != i2c_master_x.mst_fsm_n)
             last_mst_fsm <= i2c_master_x.mst_fsm;
@@ -67,11 +72,11 @@ module tb();
 
     // payload ready control
     initial begin
-        mst_ctrl = 'h5b_03;
+        mst_ctrl = 'h5b_0f;
         #210;
-        mst_ctrl = 'h5b_83;
+        mst_ctrl = 'h5b_8f;
         repeat (1) @ (posedge mst_status[7]);
-        mst_ctrl = 'h5b_03;
+        mst_ctrl = 'h5b_0f;
     end
 
     // ack response
@@ -100,7 +105,7 @@ module tb();
         end
     end
 
-    assign sda = sda_slv;
+    // assign sda = sda_slv;
 
     initial begin
         @ (posedge rstn) $display ("rstn end");
