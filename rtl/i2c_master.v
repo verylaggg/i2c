@@ -25,60 +25,55 @@ SCL       |__|  |__|  |__|  |__|  |__|  |__|  |__|  |__|  |__|
 SDA     |_________|     |_____|           |_____|     |________|              
        fp                                                                      
 
-coding priority and note:
-    1 master write
-        * Desc. ACK/NACK only consider to receive sda
-        * TODO: wr data count
-        * TODO: reaction to ACK/NACK (replay...)
-    2 master read
-        * TODO: ACK/NACK response
-        * TODO: NACK for last-bytes DATA
-
 */
 
 module i2c_master(
     input   clk,
     input   rstn,
-    input   [7:0] mst_dfifo,
-    input   [7:0] mst_ctrl,
+    input   [127:0] mst_wfifo,
+    input   [15:0] mst_ctrl,
+    output  [127:0] mst_rfifo,
     output  [7:0] mst_status,
     output  scl,
     inout   sda
 );
     localparam  IDLE    = 0,
                 START   = 1, // 0
-                ADDR_RW = 2,
-                RD_WR   = 3, // WR = 0 = !RD
-                DATA    = 4,
-                ACK_NACK= 5, // ACK = 0 = !NACK
-                STOP    = 6; // 1
+                ADDR_RW = 2, // WR = 0 = !RD
+                DATA    = 3,
+                N_ACK   = 4, // ACK = 0 = !NACK
+                STOP    = 5; // 1
+    localparam DATA_CHG_INTERVAL = 'h4;
 
-    reg     [3:0]   mst_fsm, mst_fsm_n, last_mst_fsm;
-    reg     [3:0]   sda_cnt, clk_div_cnt, bit_cnt;
+    reg     [3:0]   mst_fsm, mst_fsm_n;
+    reg     [3:0]   sda_cnt, clk_div_cnt, bit_cnt, pld_cnt;
     reg             sda_en_d1, scl_d1, scl_en, sda_en;
-    reg [8*10-1:0]  mst_fsm_ascii, last_mst_fsm_ascii;
-    reg     [7:0]   data_buf;
-    reg             rcv_ack;
-    wire            sda_chg, str_stb, end_trans;
-    wire            scl_rp, scl_fp, scl_bp;
+    reg [8*10-1:0]  mst_fsm_ascii;
+    reg     [127:0] data_buf;
+    reg             rcv_ack, is_wr;
+    wire            sda_chg, str_stb, stp_stb, scl_fp;
     wire            clk_div16, clk_div8, clk_div4, clk_div2;
-
+    // states
+    wire            in_idle  = mst_fsm == IDLE;
+    wire            in_str   = mst_fsm == START;
+    wire            in_addrw = mst_fsm == ADDR_RW;
+    wire            in_data  = mst_fsm == DATA;
+    wire            in_n_ack = mst_fsm == N_ACK;
+    wire            in_stp   = mst_fsm == STOP;
     // control signals
+    wire    [6:0]   address = mst_ctrl[15:9];
+    wire            rd_wr   = mst_ctrl[8];
     wire            pld_rdy = mst_ctrl[7];
-    wire    [3:0]   pld_cnt = mst_ctrl[3:0]; // max payload=16Bytes
-
+    wire    [3:0]   pld_len = mst_ctrl[3:0] + 'h1; // max payload=16Bytes
     // status signals
     wire    [7:0]   mst_status;
-    assign mst_status[7] = busy;
-
-    // to simulate enable i2c master whenever data is ready
 
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
             sda_en = 'h0;
-        else if (mst_fsm == IDLE && pld_rdy)
+        else if (in_idle && pld_rdy)
             sda_en = 'h1;
-        else if ((mst_fsm == STOP) && sda && scl)
+        else if (in_stp && sda && scl)
             sda_en = 'h0;
         else
             sda_en = sda_en;
@@ -89,19 +84,9 @@ module i2c_master(
         IDLE:     mst_fsm_ascii = "IDLE"    ;
         START:    mst_fsm_ascii = "START"   ;
         ADDR_RW:  mst_fsm_ascii = "ADDR_RW" ;
-        RD_WR:    mst_fsm_ascii = "RD_WR"   ;
         DATA:     mst_fsm_ascii = "DATA"    ;
-        ACK_NACK: mst_fsm_ascii = "ACK_NACK";
+        N_ACK:    mst_fsm_ascii = "N_ACK"   ;
         STOP:     mst_fsm_ascii = "STOP"    ;
-        endcase
-        case (last_mst_fsm)
-        IDLE:     last_mst_fsm_ascii = "IDLE"    ;
-        START:    last_mst_fsm_ascii = "START"   ;
-        ADDR_RW:  last_mst_fsm_ascii = "ADDR_RW" ;
-        RD_WR:    last_mst_fsm_ascii = "RD_WR"   ;
-        DATA:     last_mst_fsm_ascii = "DATA"    ;
-        ACK_NACK: last_mst_fsm_ascii = "ACK_NACK";
-        STOP:     last_mst_fsm_ascii = "STOP"    ;
         endcase
     end
 
@@ -122,28 +107,21 @@ module i2c_master(
         // 'h2
         ADDR_RW: begin // 7-bits
             if (bit_cnt == 'h7 && scl_fp)
-                mst_fsm_n = ACK_NACK;
+                mst_fsm_n = N_ACK;
         end
-//        // 'h3
-//        RD_WR: begin
-//            if (scl)
-//                mst_fsm_n = ACK_NACK;
-//        end
-        // the state is also used for ADDR_RW
         // 'h4
         DATA: begin // 8-bits
             if (bit_cnt == 'h7 && scl_fp)
-                mst_fsm_n = ACK_NACK;
+                mst_fsm_n = N_ACK;
         end
         // 'h5
-        ACK_NACK: begin
-            if (scl_fp && last_mst_fsm == ADDR_RW) begin
-                if (!rcv_ack)
+        N_ACK: begin
+            if (scl_fp) begin
+                if (!rcv_ack || (pld_cnt == 'h0))
                     mst_fsm_n = STOP;
                 else
                     mst_fsm_n = DATA;
-            end else if (scl_fp && last_mst_fsm == DATA)
-                mst_fsm_n = STOP;
+            end
         end
         // 'h6
         STOP: begin
@@ -193,33 +171,46 @@ module i2c_master(
     end
 
     always @ (posedge clk or negedge rstn) begin
-        if (!rstn)
+        if (!rstn || in_idle)
             data_buf <= 'h0;
-        else if (scl_fp && (mst_fsm == START || mst_fsm == ACK_NACK))
-            data_buf <= mst_dfifo;
-        else if (sda_chg && (bit_cnt > 0) && (mst_fsm == DATA || mst_fsm == ADDR_RW))
-            data_buf <= {data_buf[6:0], 1'h0};
+        else if (scl_fp && in_str)
+            data_buf <= {address, rd_wr, 120'h0};
+        else if (scl_fp && in_n_ack)
+            data_buf <= mst_wfifo;
+        else if (sda_chg && (bit_cnt > 0) && (in_data || in_addrw))
+            data_buf <= {data_buf[126:0], 1'h0};
         else
             data_buf <= data_buf;
     end
 
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
+            pld_cnt <= 'h0;
+        else if (pld_rdy && in_idle)
+            pld_cnt <= pld_len;
+        else if (sda_chg && in_data && bit_cnt == 'h0)
+            pld_cnt <= pld_cnt - 'h1;
+        else
+            pld_cnt <= pld_cnt;
+    end
+
+    always @ (posedge clk or negedge rstn) begin
+        if (!rstn)
             rcv_ack <= 'h0;
-        else if (mst_fsm == ACK_NACK) begin
+        else if (in_n_ack) begin
             if (!sda && scl)
                 rcv_ack <= 'h1;
-            else if (sda_chg)
-                rcv_ack <= 'h0;
+            else
+                rcv_ack <= rcv_ack;
         end else
-            rcv_ack <= rcv_ack;
+            rcv_ack <= 'h0;
     end
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
             bit_cnt <= 'h0;
-        else if (scl_fp && (mst_fsm == DATA || mst_fsm == ADDR_RW))
+        else if (scl_fp && (in_data || in_addrw))
             bit_cnt <= bit_cnt + 'h1;
-        else if (scl_fp && mst_fsm == ACK_NACK)
+        else if (scl_fp && in_n_ack)
             bit_cnt <= 'h0;
         else
             bit_cnt <= bit_cnt;
@@ -227,29 +218,27 @@ module i2c_master(
 
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
-            last_mst_fsm <= IDLE;
-        else if (mst_fsm != mst_fsm_n)
-            last_mst_fsm <= mst_fsm;
+            is_wr <= 'h0;
+        else if (scl_fp && in_str)
+            is_wr <= !mst_ctrl[8];
         else
-            last_mst_fsm <= last_mst_fsm;
+            is_wr <= is_wr;
     end
-    assign sda_chg= sda_cnt == 'h4;
-    assign scl_rp = !scl_d1 & scl ;
-    assign scl_fp = scl_d1 & !scl ;
-    assign scl_bp = scl_d1 ^ scl ;
 
+    assign sda_chg= sda_cnt == DATA_CHG_INTERVAL;
+    assign scl_fp = scl_d1 & !scl ;
     assign str_stb = !sda_en_d1 && sda_en;
     assign stp_stb = sda_en_d1 && !sda_en;
-    //assign scl_en = str_stb ? 'h1 : 'h0;
-    //assign sda_en = 'h1;
-    assign scl = scl_en ? clk_div16 : 'h1;
-    assign sda = !sda_en      ? 'hz :
-         (mst_fsm == IDLE)    ? 'h0 :
-         (mst_fsm == START)   ? data_buf[7] :
-         (mst_fsm == ADDR_RW) ? data_buf[7] :
-         (mst_fsm == DATA)    ? data_buf[7] :
-         (mst_fsm == STOP && (sda_cnt != 0))    ? 'h0 : 'hz;
     assign {clk_div16, clk_div8, clk_div4, clk_div2} = clk_div_cnt;
-    assign busy = mst_fsm != IDLE;
+    assign busy = !in_idle;
+    assign mst_status = {busy, 7'h0};
+    assign scl = scl_en ? clk_div16 : 'h1;
+    assign sda = !sda_en ? 'hz :
+            (in_idle)    ? 'h0 :
+            (in_str)     ? data_buf[127] :
+            (in_addrw)   ? data_buf[127] :
+            (in_data && is_wr) ? data_buf[127] :
+            (in_stp && (sda_cnt != 0)) ? 'h0 :
+            (in_n_ack && !is_wr && pld_cnt != 'h0) ? 'h0 : 'hz;
 
 endmodule
