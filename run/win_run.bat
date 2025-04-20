@@ -25,7 +25,7 @@
     IF /I %M%==s    GOTO End
 
 :WaveformViewer
-    start /b gtkwave tb.vcd
+    start /b gtkwave tb.vcd --dark -r ./gtkwaverc.txt
 
 :End
     IF /I %M%==s    pause
