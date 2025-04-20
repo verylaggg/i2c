@@ -15,7 +15,9 @@
 * Description : I2C Slave
 * 
 *******************************************************************************/
-module i2c_slave(
+module i2c_slave # (
+    parameter SLV_ADDR = 'h2d
+)(
     input   clk,
     input   rstn,
     input   scl,
@@ -27,15 +29,14 @@ module i2c_slave(
                 DATA    = 3,
                 N_ACK   = 4, // ACK = 0 = !NACK
                 STOP    = 5; // 1
-    localparam DATA_CHG_INTERVAL = 'h4;
 
-    reg     [6:0]   slave_addr = 'h2d;
     reg     [3:0]   slv_fsm, slv_fsm_n, bit_cnt;
     reg     [4:0]   pld_cnt;
     reg [8*10-1:0]  slv_fsm_ascii;
     reg     [127:0] data_buf;
     reg             scl_d1, sda_d1, selected, mst_wr;
     reg     [7:0]   mst_instr;
+    wire    [6:0]   slv_addr = SLV_ADDR;
     wire            scl_fp, scl_rp, sda_fp, sda_rp, sda_o;
     // states
     wire            in_idle  = slv_fsm == IDLE;
@@ -77,6 +78,7 @@ module i2c_slave(
         end
         // 'h3
         DATA: begin // 8b data
+// TODO: temp. N_ACK -> DATA -> STOP, need beter transition to STOP
             if (scl && sda_rp)
                 slv_fsm_n = STOP;
             else if (bit_cnt == 'h7 && scl_fp)
@@ -109,7 +111,7 @@ module i2c_slave(
     end
 
     always @ (posedge clk or negedge rstn) begin
-        if (!rstn)
+        if (!rstn || in_idle)
             bit_cnt <= 'h0;
         else if (scl_fp && (in_data || in_addrw))
             bit_cnt <= bit_cnt + 'h1;
@@ -123,7 +125,7 @@ module i2c_slave(
         if (!rstn || in_idle)
             {selected, mst_wr} <= 'h0;
         else if (in_addrw && scl_fp && bit_cnt == 'h7)
-            {selected, mst_wr} <= {mst_instr[7:1] == slave_addr, !mst_instr[0]};
+            {selected, mst_wr} <= {mst_instr[7:1] == slv_addr, !mst_instr[0]};
         else
             {selected, mst_wr} <= {selected, mst_wr};
     end
@@ -131,9 +133,9 @@ module i2c_slave(
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
             data_buf <= {4{32'hdead_beef}};
-        else if (scl_fp && in_data && mst_wr)
+        else if (scl_fp && in_data && mst_wr && selected)
             data_buf <= {data_buf[126:0], sda};
-        else if (scl_fp && in_data && !mst_wr)
+        else if (scl_fp && in_data && !mst_wr && selected)
             data_buf <= {data_buf[126:0], 1'h0};
         else
             data_buf <= data_buf;
@@ -149,7 +151,7 @@ module i2c_slave(
     end
 
     always @ (posedge clk or negedge rstn) begin
-        if (!rstn)
+        if (!rstn || in_str)
             pld_cnt <= 'h0;
         else if (in_data && bit_cnt == 'h0 && scl_fp)
             pld_cnt <= pld_cnt + 'h1;
@@ -164,6 +166,6 @@ module i2c_slave(
     assign sda_o = in_idle ? 'hz :
             (in_n_ack && selected && !mst_wr && pld_cnt == 'h0) ? 'h0 :
             (in_n_ack && selected && mst_wr && pld_cnt < 'h11) ? 'h0 :
-            (in_data && !mst_wr) ? data_buf[127] : 'hz;
+            (in_data && !mst_wr && selected) ? data_buf[127] : 'hz;
     assign sda = sda_o;
 endmodule

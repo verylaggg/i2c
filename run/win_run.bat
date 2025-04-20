@@ -1,5 +1,5 @@
 @ECHO OFF
-CLS
+@REM CLS
 :Menu
     ECHO s. Simulation
     ECHO w. Waveform viewer

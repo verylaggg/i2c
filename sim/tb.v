@@ -18,10 +18,9 @@
 `timescale 1ns/1ns
 module tb();
 
-    reg TEST_STEP = 0;
+    reg [3:0] TEST_STEP = 0;
     reg [127:0] mst_wfifo;
     reg  [15:0] mst_ctrl; // 7b_adr, 1b_rw, 1b_rdy(en), 3b_rsvd, 4b_len
-    reg sda_slv;
     reg [3:0] last_mst_fsm;
     wire [127:0] mst_rfifo;
     wire rstn, clk, clk_20m , clk_50m , clk_100m;
@@ -49,74 +48,66 @@ module tb();
         .scl        (scl        ),
         .sda        (sda        )
     );
-    i2c_slave i2c_slave_x (
+
+    i2c_slave #(
+        .SLV_ADDR   ('h2d       )
+    ) i2c_slave1_x (
         .clk        (clk_100m   ),
         .rstn       (rstn       ),
         .scl        (scl        ),
         .sda        (sda        )
     );
-    always @ (posedge clk_100m) begin
-        if (i2c_master_x.mst_fsm != i2c_master_x.mst_fsm_n)
-            last_mst_fsm <= i2c_master_x.mst_fsm;
-        else
-            last_mst_fsm <= last_mst_fsm;
+
+    i2c_slave #(
+        .SLV_ADDR   ('h2c       )
+    ) i2c_slave2_x (
+        .clk        (clk_100m   ),
+        .rstn       (rstn       ),
+        .scl        (scl        ),
+        .sda        (sda        )
+    );
+
+    always @ (posedge mst_ctrl[7]) begin
+        $display("I2C_MST_STEP_%0h @ %0t ns, addr=%0h, wr=%0h, len=%0h",
+            TEST_STEP,
+            $realtime,
+            mst_ctrl[15:9],
+            !mst_ctrl[8],
+            mst_ctrl[3:0] );
     end
 
-    // payload
-    always @ (posedge scl or negedge rstn) begin
-        if (!rstn)
-            mst_wfifo <= {16{8'h5a}};
-        else
-            mst_wfifo <= mst_wfifo;
-    end
-
-    // payload ready control
+    // i2c_master control
     initial begin
-        mst_ctrl = 'h5b_0f;
+        TEST_STEP = 0;
+        mst_wfifo = {16{8'h5a}};
+        mst_ctrl = 'h00_00;
         #210;
-        mst_ctrl = 'h5b_8f;
-        repeat (1) @ (posedge mst_status[7]);
-        mst_ctrl = 'h5b_0f;
+
+        TEST_STEP = 1;
+        MST_CTRL_ONCE('h2d, 1, 'hf);
+        #2880;
+
+        TEST_STEP = 2;
+        MST_CTRL_ONCE('h2d, 0, 'hf);
+        #388;
+
+        TEST_STEP = 3;
+        MST_CTRL_ONCE('h2c, 1, 'hf);
+        #2880;
+
+        TEST_STEP = 4;
+        MST_CTRL_ONCE('h2c, 0, 'hf);
+        #2880;
+
+        TEST_STEP = 5;
     end
-
-    // ack response
-    always @ (*) begin
-        sda_slv = 'hz;
-
-        if (i2c_master_x.is_wr) begin // write
-            if (i2c_master_x.in_n_ack) begin
-                @ (posedge i2c_master_x.sda_chg);
-                sda_slv = 'h0; // ack = 0 = !nack
-                @ (posedge i2c_master_x.sda_chg);
-                force sda_slv = 'hz;
-                @ (negedge i2c_master_x.sda_chg);
-                release sda_slv;
-            end
-        end else begin // read
-            if (i2c_master_x.in_n_ack && last_mst_fsm == 2) begin
-                @ (posedge i2c_master_x.sda_chg);
-                sda_slv = 'h0; // ack = 0 = !nack
-                @ (posedge i2c_master_x.sda_chg);
-                force sda_slv = 'hz;
-                @ (negedge i2c_master_x.sda_chg);
-                release sda_slv;
-            end
-
-        end
-    end
-
-    // assign sda = sda_slv;
 
     initial begin
         @ (posedge rstn) $display ("rstn end");
-        TEST_STEP = 1;
+        wait (TEST_STEP == 'h1);
         $display("sim start");
 
-        // wait ~busy
-        @ (posedge mst_status[7]);
-        @ (negedge mst_status[7]);
-        #(150);
-        TEST_STEP = 2;
+        wait (TEST_STEP == 'h5);
         $display("sim end");
         $finish;
     end
@@ -125,6 +116,17 @@ module tb();
         $dumpfile("tb.vcd");
         $dumpvars(0, tb);
     end
+
+    task MST_CTRL_ONCE;
+        input [6:0] addr;
+        input       rd_wr; // wr = 0 = !rd
+        input [3:0] pld_len;
+    begin
+        mst_ctrl = {addr, rd_wr, 4'b1000, pld_len};
+        @ (posedge mst_status[7]) mst_ctrl = 'h00_00;
+        @ (negedge mst_status[7]);
+    end
+    endtask
 
 endmodule
 

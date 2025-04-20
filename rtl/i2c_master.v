@@ -27,7 +27,9 @@ SDA     |_________|     |_____|           |_____|     |________|
 
 */
 
-module i2c_master(
+module i2c_master #(
+    parameter DATA_CHG_INTERVAL = 'h4
+)(
     input   clk,
     input   rstn,
     input   [127:0] mst_wfifo,
@@ -43,16 +45,15 @@ module i2c_master(
                 DATA    = 3,
                 N_ACK   = 4, // ACK = 0 = !NACK
                 STOP    = 5; // 1
-    localparam DATA_CHG_INTERVAL = 'h4;
 
     reg     [3:0]   mst_fsm, mst_fsm_n;
     reg     [3:0]   sda_cnt, clk_div_cnt, bit_cnt;
-    reg     [4:0]   pld_cnt;
+    reg     [4:0]   pld_cnt, pld_len_r;
     reg             sda_en_d1, scl_d1, scl_en, sda_en;
     reg [8*10-1:0]  mst_fsm_ascii;
-    reg     [127:0] data_buf;
-    reg             rcv_ack, is_wr;
-    wire            sda_chg, str_stb, stp_stb, scl_fp;
+    reg     [127:0] data_buf, mst_rfifo;
+    reg             rcv_ack, mst_wr;
+    wire            sda_chg, str_stb, stp_stb, scl_fp, sda_o;
     wire            clk_div16, clk_div8, clk_div4, clk_div2;
     // states
     wire            in_idle  = mst_fsm == IDLE;
@@ -171,29 +172,43 @@ module i2c_master(
             sda_cnt <= sda_cnt + 'h1;
     end
 
-    // TODO: rfifo didn't finish
     always @ (posedge clk or negedge rstn) begin
-        if (!rstn || in_idle)
+        if (!rstn)
             data_buf <= 'h0;
-        else if (scl_fp && in_str)
+        else if (in_idle && pld_rdy) //scl_fp && in_str)
             data_buf <= {address, rd_wr, 120'h0};
-        else if (scl_fp && in_n_ack)
-            data_buf <= mst_wfifo; // TODO: wfifo only need load once
-        else if (sda_chg && (bit_cnt > 0) && (in_data || in_addrw))
+        else if (scl_fp && in_n_ack && mst_wr) begin
+            if (pld_cnt == pld_len_r)
+                data_buf <= mst_wfifo;
+            else
+                data_buf <= {data_buf[126:0], 1'h0};
+        end else if (sda_chg && (bit_cnt > 0) && in_addrw)
             data_buf <= {data_buf[126:0], 1'h0};
-        else
+        else if (sda_chg && in_data) begin
+            if (bit_cnt > 0 && mst_wr)
+                data_buf <= {data_buf[126:0], 1'h0};
+            else if (!mst_wr) // mst_rd
+                data_buf <= {data_buf[126:0], sda};
+        end else
             data_buf <= data_buf;
     end
 
     always @ (posedge clk or negedge rstn) begin
-        if (!rstn)
+        if (!rstn) begin
             pld_cnt <= 'h0;
-        else if (pld_rdy && in_idle)
+            pld_len_r <= 'h0;
+            mst_wr <= 'h0;
+        end else if (pld_rdy && in_idle) begin
+            mst_wr <= !rd_wr;
             pld_cnt <= pld_len;
-        else if (sda_chg && in_data && bit_cnt == 'h0)
+            pld_len_r <= pld_len;
+        end else if (sda_chg && in_data && bit_cnt == 'h0)
             pld_cnt <= pld_cnt - 'h1;
-        else
+        else begin
+            mst_wr <= mst_wr;
             pld_cnt <= pld_cnt;
+            pld_len_r <= pld_len_r;
+        end
     end
 
     always @ (posedge clk or negedge rstn) begin
@@ -207,6 +222,7 @@ module i2c_master(
         end else
             rcv_ack <= 'h0;
     end
+
     always @ (posedge clk or negedge rstn) begin
         if (!rstn)
             bit_cnt <= 'h0;
@@ -219,12 +235,12 @@ module i2c_master(
     end
 
     always @ (posedge clk or negedge rstn) begin
-        if (!rstn)
-            is_wr <= 'h0;
-        else if (scl_fp && in_str)
-            is_wr <= !mst_ctrl[8];
+        if (!rstn || in_str)
+            mst_rfifo <= 'h0;
+        else if (in_stp && !mst_wr && sda_chg)
+            mst_rfifo <= data_buf;
         else
-            is_wr <= is_wr;
+            mst_rfifo <= mst_rfifo;
     end
 
     assign sda_chg= sda_cnt == DATA_CHG_INTERVAL;
@@ -235,12 +251,13 @@ module i2c_master(
     assign busy = !in_idle;
     assign mst_status = {busy, 7'h0};
     assign scl = scl_en ? clk_div16 : 'h1;
-    assign sda = !sda_en ? 'hz :
+    assign sda_o = !sda_en ? 'hz :
             (in_idle)    ? 'h0 :
             (in_str)     ? data_buf[127] :
             (in_addrw)   ? data_buf[127] :
-            (in_data && is_wr) ? data_buf[127] :
-            (in_stp && (sda_cnt != 0)) ? 'h0 :
-            (in_n_ack && !is_wr && pld_cnt != 'h0) ? 'h0 : 'hz; // TODO: *BUG mst ack after addr
+            (in_data && mst_wr) ? data_buf[127] :
+            (in_stp && sda_cnt != 0) ? 'h0 :
+            (in_n_ack && !mst_wr && pld_cnt < pld_len_r && pld_cnt > 'h0) ? 'h0 : 'hz;
+    assign sda = sda_o;
 
 endmodule
