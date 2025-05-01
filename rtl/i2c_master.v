@@ -25,6 +25,7 @@ SCL       |__|  |__|  |__|  |__|  |__|  |__|  |__|  |__|  |__|
 SDA     |_________|     |_____|           |_____|     |________|              
        fp                                                                      
 
+TODO: SDA Counter can be simplified.
 */
 
 module i2c_master #(
